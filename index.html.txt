@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>☀️ 沖繩家族五天四夜規劃 App (無花費版)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        // 雖然載入 Auth/Firestore，但我們將在下方模擬資料，避免配置錯誤
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, setPersistence, browserSessionPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, updateDoc, arrayUnion, arrayRemove, collection, getDocs, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // 設定 Firebase Debug Log
+        setLogLevel('Debug');
+
+        // === START: 模擬資料配置 (讓您無需設置真實 Firebase 金鑰) ===
+        const appId = 'okinawa-trip-planner';
+        let firebaseConfig = {}; // 設為空物件，觸發下方的 Mock Data 模式
+        const initialAuthToken = null; 
+        
+        let db = null; // 設為 null，模擬 DB 未連接
+        let auth = null;
+        let userId = 'MOCK_USER_ID';
+        let isAuthReady = true; 
+        // === END: 模擬資料配置 ===
+
+
+        // 設置初始數據 (已將地圖短連結替換為完整的 Google Maps URL，解決 Dynamic Link Not Found 問題)
+        const INITIAL_ITINERARY_DATA = {
+            Day1: [
+                { id: 'd1-1', time: '19:30', desc: '抵達那霸機場 (OKA)', notes: '', category: 'Travel', map: 'https://www.google.com/maps/place/%E9%82%A3%E9%9C%B8%E5%9C%8B%E9%9A%9B%E6%A9%9F%E5%A0%B4/@26.196324,127.644919,15z/data=!4m6!3m5!1s0x34e569932467d165:0x2213e488106f36d!8m2!3d26.1963238!4d127.644919!16zL20vMDJtbjFk?entry=ttu' },
+                { id: 'd1-2', time: '21:00', desc: '若狹住宿 (1-10-18 Wakasa) Check-in', notes: '距離波上宮近', category: 'Accom', map: 'https://www.google.com/maps/place/%E6%B3%A2%E4%B8%8A%E5%AE%AE/@26.216654,127.67499,17z/data=!4m6!3m5!1s0x34e569992f08a467:0x2e06912384a5585b!8m2!3d26.2166541!4d127.6749899!16zL20vMDNxbmtf?entry=ttu' },
+                { id: 'd1-3', time: '21:45', desc: '晚餐：國際通周邊', notes: '建議找能容納12人的居酒屋', category: 'Food', map: 'https://www.google.com/maps/place/%E5%9C%8B%E9%9A%9B%E9%80%9A/@26.215582,127.685981,17z/data=!4m6!3m5!1s0x34e569911e3b5e43:0x41e156485d450849!8m2!3d26.2155815!4d127.685981!16zL20vMDJtdGt3?entry=ttu' },
+                { id: 'd1-4', time: '23:00', desc: '國際通 -> 唐吉軻德', notes: '採購宵夜零食 (步行)', category: 'Shopping', map: 'https://www.google.com/maps/place/%E5%94%90%E5%90%89%E8%A8%B6%E5%BE%B7+%E5%9C%8B%E9%9A%9B%E9%80%9A%E5%BA%97/@26.214434,127.687522,17z/data=!4m6!3m5!1s0x34e5697d4b297c8d:0x39a3f28328148b59!8m2!3d26.2144342!4d127.6875221!16s%2Fg%2F1hb_07v8h?entry=ttu' }
+            ],
+            Day2: [
+                { id: 'd2-1', time: '08:00', desc: '若狹住宿 Check-out', notes: '必須提早！前往租車公司', category: 'Accom', map: '' },
+                { id: 'd2-2', time: '08:30', desc: '抵達租車行辦手續', notes: '確保09:00準時取車', category: 'Travel', map: 'https://www.google.com/maps/search/%E6%B2%96%E7%B9%A9%E9%82%A3%E9%9C%B8%E7%A7%9F%E8%BB%8A/@26.212456,127.679198,14z/data=!3m1!4b1?entry=ttu' },
+                { id: 'd2-3', time: '09:10', desc: '出發前往 DMM', notes: '最晚出發時間，需事先購票', category: 'Travel', map: '' },
+                { id: 'd2-4', time: '09:30', desc: 'DMM Kariyushi水族館', notes: '準時入場！預計停留 4 小時', category: 'Sightseeing', map: 'https://www.google.com/maps/place/DMM+Kariyushi+%E6%B0%B4%E6%97%8F%E9%A4%A8/@26.155837,127.669866,17z/data=!4m6!3m5!1s0x34e568478d53018d:0xb029f64c1851b447!8m2!3d26.1558369!4d127.6698658!16s%2Fg%2F11b65_g75p?entry=ttu' },
+                { id: 'd2-5', time: '13:30', desc: '午餐：瀨長島 Umikaji Terrace', notes: '海景露臺用餐', category: 'Food', map: 'https://www.google.com/maps/place/%E7%80%AC%E9%95%B7%E5%B3%B6+Umikaji+Terrace/@26.184347,127.649641,17z/data=!4m6!3m5!1s0x34e5699351d45903:0x15f1896792376b5c!8m2!3d26.184347!4d127.6496414!16s%2Fg%2F11bw6l6y23?entry=ttu' },
+                { id: 'd2-6', time: '15:30', desc: '瀨長島 散步', notes: '欣賞飛機起降', category: 'Sightseeing', map: 'https://www.google.com/maps/place/%E7%80%AC%E9%95%B7%E5%B3%B6+Umikaji+Terrace/@26.184347,127.649641,17z/data=!4m6!3m5!1s0x34e5699351d45903:0x15f1896792376b5c!8m2!3d26.184347!4d127.6496414!16s%2Fg%2F11bw6l6y23?entry=ttu' },
+                { id: 'd2-7', time: '17:00', desc: '駕車前往宜野灣住宿 Check-in', notes: '宜野灣市宇治泊1-7-10', category: 'Accom', map: 'https://www.google.com/maps/place/%E5%AE%9C%E9%87%8E%E6%B9%BE%E6%B5%B7%E6%BF%B1%E5%85%AC%E5%9C%92/@26.273619,127.731737,17z/data=!4m6!3m5!1s0x34e56d7877e68225:0x8fa40714b92b6a7b!8m2!3d26.2736187!4d127.7317366!16s%2Fg%2F11b7p7r2wz?entry=ttu' },
+                { id: 'd2-8', time: '20:00', desc: '晚餐：飯店周邊或美國村', notes: '建議提前預約燒肉', category: 'Food', map: 'https://www.google.com/maps/place/%E7%BE%8E%E5%9C%8B%E6%9D%91/@26.313023,127.75704,17z/data=!4m6!3m5!1s0x34e56d81432f8087:0x5e2b02a9b3a32f6a!8m2!3d26.3130228!4d127.7570395!16zL20vMDd4Y3c4?entry=ttu' }
+            ],
+            Day3: [
+                { id: 'd3-1', time: '08:00', desc: '飯店早餐後出發', notes: '前往最北端，車程約 1hr 40mins', category: 'Travel', map: '' },
+                { id: 'd3-2', time: '10:00', desc: '古宇利大橋', notes: '絕美海景橋', category: 'Sightseeing', map: 'https://www.google.com/maps/place/%E5%8F%A4%E5%AE%87%E5%88%A9%E5%A4%A7%E6%A9%8B/@26.702081,127.954605,17z/data=!4m6!3m5!1s0x34e4a7a8d562211f:0x393c39389e672728!8m2!3d26.7020808!4d127.9546053!16s%2Fg%2F12239d_r?entry=ttu' },
+                { id: 'd3-3', time: '12:30', desc: '午餐：名護或本部町周邊', notes: '建議Ufuya古民家沖繩麵', category: 'Food', map: 'https://www.google.com/maps/place/%E5%90%8D%E8%AD%B7%E9%A6%AC%E5%96%84%E8%87%AA%E5%9C%A8%E5%B1%8B%EF%BC%88%E3%81%86%E3%81%B5%E3%82%84%EF%BC%89/@26.609439,127.961916,17z/data=!4m6!3m5!1s0x34e44b9b21f3f773:0x71e36780824b2b2a!8m2!3d26.6094391!4d127.9619163!16s%2Fg%2F11b7z_p77z?entry=ttu' },
+                { id: 'd3-4', time: '14:30', desc: '萬座毛', notes: '駕車南下回程途中停留', category: 'Sightseeing', map: 'https://www.google.com/maps/place/%E8%90%AC%E5%BA%A7%E6%AF%9B/@26.490899,127.854154,17z/data=!4m6!3m5!1s0x34e51242c75a5e37:0x5e790a1910245084!8m2!3d26.4908987!4d127.8541542!16zL20vMDJtZDN3?entry=ttu' },
+                { id: 'd3-5', time: '16:00', desc: '永旺夢樂城 Okinawa Rycom (AEON)', notes: '重點購物與晚餐時間', category: 'Shopping', map: 'https://www.google.com/maps/place/%E6%B0%B8%E6%97%BA%E5%A4%A2%E6%A8%82%E5%9F%8E%E6%B2%96%E7%B9%A9%E8%90%8A%E7%94%B1%E5%8B%9F/@26.311757,127.794279,17z/data=!4m6!3m5!1s0x34e51086e3925055:0xb942ed7245b0a3af!8m2!3d26.3117573!4d127.7942792!16s%2Fg%2F11b6h38z9h?entry=ttu' },
+                { id: 'd3-6', time: '20:00', desc: '晚餐：永旺夢樂城內', notes: '輕鬆享用晚餐，繼續購物', category: 'Food', map: 'https://www.google.com/maps/place/%E6%B0%B8%E6%97%BA%E5%A4%A2%E6%A8%82%E5%9F%8E%E6%B2%96%E7%B9%A9%E8%90%8A%E7%94%B1%E5%8B%9F/@26.311757,127.794279,17z/data=!4m6!3m5!1s0x34e51086e3925055:0xb942ed7245b0a3af!8m2!3d26.3117573!4d127.7942792!16s%2Fg%2F11b6h38z9h?entry=ttu' },
+            ],
+            Day4: [
+                { id: 'd4-1', time: '09:30', desc: '玉泉洞 (沖繩世界)', notes: '探索鐘乳石洞與琉球村落', category: 'Sightseeing', map: 'https://www.google.com/maps/place/%E7%8E%89%E6%B3%89%E6%B4%9E%E3%83%BB%E6%B2%96%E7%B9%A9%E4%B8%96%E7%95%8C/@26.155848,127.747385,17z/data=!4m6!3m5!1s0x34e56b468a733845:0x93301a5554af6b5e!8m2!3d26.1558483!4d127.7473852!16s%2Fm%2F01348p3b?entry=ttu' },
+                { id: 'd4-2', time: '13:00', desc: '午餐：SAN-A PARCO CITY 內餐廳', notes: '方便，節省移動時間', category: 'Food', map: 'https://www.google.com/maps/place/SAN-A+PARCO+CITY/@26.241324,127.671077,17z/data=!4m6!3m5!1s0x34e569992f08a467:0x2e06912384a5585b!8m2!3d26.2166541!4d127.6749899!16zL20vMDNxbmtf?entry=ttu' },
+                { id: 'd4-3', time: '14:30', desc: 'Placo (SAN-A PARCO CITY) 購物', category: 'Shopping', map: 'https://www.google.com/maps/place/SAN-A+PARCO+CITY/@26.241324,127.671077,17z/data=!4m6!3m5!1s0x34e569992f08a467:0x2e06912384a5585b!8m2!3d26.2166541!4d127.6749899!16zL20vMDNxbmtf?entry=ttu' },
+                { id: 'd4-4', time: '18:30', desc: '駕車前往國際通周邊', notes: '提前尋找停車位', category: 'Travel', map: '' },
+                { id: 'd4-5', time: '20:00', desc: '晚餐：國際通 周邊', notes: '推薦JUMBO STEAK HAN\'S', category: 'Food', map: 'https://www.google.com/maps/place/%E5%9C%8B%E9%9A%9B%E9%80%9A/@26.215582,127.685981,17z/data=!4m6!3m5!1s0x34e569911e3b5e43:0x41e156485d450849!8m2!3d26.2155815!4d127.685981!16zL20vMDJtdGt3?entry=ttu' },
+            ],
+            Day5: [
+                { id: 'd5-1', time: '09:00', desc: '宜野灣飯店 Check-out', notes: '將行李帶上車', category: 'Accom', map: '' },
+                { id: 'd5-2', time: '10:00', desc: '第一牧志市場', notes: '採購土產、體驗在地海鮮', category: 'Shopping', map: 'https://www.google.com/maps/place/%E7%AC%AC%E4%B8%80%E7%89%A7%E5%BF%97%E5%B8%82%E5%A0%B4/@26.215582,127.685981,17z/data=!4m6!3m5!1s0x34e5697d81cc5665:0xb3047a063162b289!8m2!3d26.2155815!4d127.685981!16zL20vMDJtdGt3?entry=ttu' },
+                { id: 'd5-3', time: '12:30', desc: '午餐：市場內代客料理或周邊', notes: '在市場內用餐', category: 'Food', map: 'https://www.google.com/maps/place/%E7%AC%AC%E4%B8%80%E7%89%A7%E5%BF%97%E5%B8%82%E5%A0%B4/@26.215582,127.685981,17z/data=!4m6!3m5!1s0x34e5697d81cc5665:0xb3047a063162b289!8m2!3d26.2155815!4d127.685981!16zL20vMDJtdGt3?entry=ttu' },
+                { id: 'd5-4', time: '14:00', desc: '波上宮', notes: '沖繩八社之首，靠近海邊的神社', category: 'Sightseeing', map: 'https://www.google.com/maps/place/%E6%B3%A2%E4%B8%8A%E5%AE%AE/@26.216654,127.67499,17z/data=!4m6!3m5!1s0x34e569992f08a467:0x2e06912384a5585b!8m2!3d26.2166541!4d127.6749899!16zL20vMDNxbmtf?entry=ttu' },
+                { id: 'd5-5', time: '15:00', desc: '那霸機場周邊還車', notes: '務必準時，預留充足時間', category: 'Travel', map: '' },
+                { id: 'd5-6', time: '18:00', desc: '辦理登機手續', notes: '', category: 'Travel', map: '' },
+            ]
+        };
+        
+        let itineraryData = INITIAL_ITINERARY_DATA;
+
+        // --- Firebase Initialization and Auth (已修改為 Mock 模式) ---
+        window.initFirebase = async () => {
+            // 由於 firebaseConfig 為空，直接進入 Mock Data 模式
+            if (Object.keys(firebaseConfig).length === 0) {
+                console.error("Firebase is not configured. Using mock data.");
+                document.getElementById('user-id-display').textContent = `User ID: MOCK_MODE`;
+                window.renderItinerary(itineraryData);
+                return;
+            }
+
+            // 以下為真實 Firebase 邏輯 (此處不會執行)
+            const app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+            
+            // ... (Auth Logic) ...
+        };
+
+        // --- Firestore Operations (已修改為 Mock 模式) ---
+        // 在 Mock 模式下，這些函數只更新本地的 itineraryData 並重新渲染。
+        const getTripDocRef = (uid) => {
+             // 假裝回傳 DocRef，但在 Mock 模式下不實際使用
+            return { id: 'mock-doc' };
+        };
+
+        window.startDataListener = (uid) => {
+            // 在 Mock 模式下，直接渲染初始資料
+            window.renderItinerary(itineraryData);
+        };
+
+        window.updateItineraryInDB = async (newData) => {
+            // 在 Mock 模式下，直接更新本地資料
+            itineraryData = newData;
+            window.renderItinerary(itineraryData);
+            console.log("Local itinerary updated successfully (Mock Mode).");
+        };
+
+        // --- Global Utility Functions ---
+        window.categoryIcons = {
+            'Sightseeing': 'map', 'Food': 'utensils', 'Shopping': 'shopping-bag',
+            'Travel': 'car', 'Accom': 'hotel', 'Other': 'tag'
+        };
+        window.categoryColors = {
+            'Sightseeing': 'bg-blue-100 text-blue-800', 'Food': 'bg-red-100 text-red-800', 'Shopping': 'bg-green-100 text-green-800',
+            'Travel': 'bg-gray-100 text-gray-800', 'Accom': 'bg-yellow-100 text-yellow-800', 'Other': 'bg-purple-100 text-purple-800'
+        };
+
+        window.generateNewId = (dayKey) => `${dayKey.toLowerCase()}-${Date.now()}`;
+        
+        window.initFirebase();
+    </script>
+
+    <style>
+        /* 明亮海洋風格配色 */
+        :root {
+            --color-primary: #00aaff; /* 鮮明海洋藍 */
+            --color-secondary: #ff9900; /* 活力橘色 (Accent/CTA) */
+            --color-bg: #e6f7ff; /* 極淺藍白背景 (清爽) */
+            --color-nav: #0088cc; /* 導航深藍 (確保文字可讀性) */
+            --color-google-map: #1a73e8; /* Google Blue */
+        }
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            background-color: var(--color-bg);
+        }
+        /* 頂部 Header & Nav 模擬清爽海洋 */
+        #header-nav {
+            background-color: var(--color-nav);
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            color: white;
+            padding-top: 50px; /* 留給狀態欄 */
+            transition: all 0.3s ease;
+        }
+        /* 行程卡片清爽風格 */
+        .day-section {
+            background-color: white;
+            border-radius: 16px; /* 更圓潤，App 感更強 */
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
+            margin-bottom: 30px;
+            overflow: hidden;
+            border: 1px solid #cceeff; /* 淺藍色邊框 */
+        }
+        /* 行程項目的陰影和互動感 */
+        .itinerary-item {
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s, background-color 0.2s;
+            border-left: 5px solid transparent;
+        }
+        .itinerary-item:hover {
+            background-color: #f0f8ff; /* 淺藍色懸停 */
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+        }
+        /* 拖曳時的樣式 */
+        .itinerary-item.dragging {
+            opacity: 0.7;
+            box-shadow: 0 15px 30px rgba(0, 0, 0, 0.3);
+            transform: scale(1.03);
+            rotate: 2deg;
+        }
+        .itinerary-item.drag-over-top {
+            border-top: 3px solid var(--color-secondary);
+        }
+        .itinerary-item.drag-over-bottom {
+            border-bottom: 3px solid var(--color-secondary);
+        }
+
+        /* 浮動按鈕 */
+        #add-button {
+            background-color: var(--color-secondary); /* 活力橘色 */
+            transition: transform 0.3s cubic-bezier(0.68, -0.55, 0.27, 1.55), box-shadow 0.3s;
+            box-shadow: 0 5px 15px rgba(255, 153, 0, 0.6);
+        }
+        #add-button:hover {
+            transform: scale(1.1) rotate(5deg);
+            box-shadow: 0 10px 25px rgba(255, 153, 0, 0.8);
+        }
+        /* Modal 背景模糊 */
+        .modal-overlay {
+            backdrop-filter: blur(5px);
+            background-color: rgba(0, 0, 0, 0.4);
+        }
+        /* 滾動條美化 (清爽風格) */
+        .scroll-container::-webkit-scrollbar {
+            width: 8px;
+        }
+        .scroll-container::-webkit-scrollbar-thumb {
+            background: var(--color-primary);
+            border-radius: 10px;
+        }
+        .scroll-container::-webkit-scrollbar-track {
+            background: var(--color-bg);
+        }
+
+        /* 調整 lucide icons 大小 */
+        .icon {
+            width: 1em;
+            height: 1em;
+        }
+
+        /* 日期導航欄懸停效果 */
+        .nav-item.active {
+            background-color: rgba(255, 255, 255, 0.2);
+            border-bottom: 3px solid var(--color-secondary);
+        }
+    </style>
+</head>
+<body class="min-h-screen">
+
+    <header id="header-nav" class="sticky top-0 z-50 transition-all duration-300">
+        <div class="max-w-4xl mx-auto p-4 flex justify-between items-center text-sm">
+            <div class="flex items-center space-x-3">
+                <div class="flex items-center">
+                    <i data-lucide="sun-medium" class="icon mr-1 text-yellow-300"></i>
+                    <span id="current-weather">24°C 晴朗</span>
+                </div>
+                <div class="flex items-center">
+                    <i data-lucide="clock" class="icon mr-1 text-white"></i>
+                    <span id="current-time">00:00:00</span>
+                </div>
+            </div>
+            <div class="text-right">
+                <div id="user-id-display" class="text-xs opacity-70">User ID: loading</div>
+            </div>
+        </div>
+        <nav class="flex overflow-x-auto border-t border-white/20">
+            <div id="day-nav-container" class="flex max-w-4xl mx-auto w-full">
+                </div>
+        </nav>
+    </header>
+
+    <main id="itinerary-container" class="max-w-4xl mx-auto p-4 pt-8">
+        <div id="loading-message" class="text-center p-10 text-gray-500">
+            <i data-lucide="loader" class="animate-spin mx-auto w-8 h-8"></i>
+            <p class="mt-2">正在載入行程資料...</p>
+        </div>
+    </main>
+
+    <button id="add-button" class="fixed right-6 bottom-6 w-16 h-16 rounded-full shadow-xl text-white flex items-center justify-center z-50">
+        <i data-lucide="plus" class="w-8 h-8"></i>
+    </button>
+
+    <div id="edit-modal" class="modal-overlay fixed inset-0 hidden items-center justify-center z-[100] p-4">
+        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto p-6 transition-all duration-300 transform scale-95 opacity-0" id="modal-content">
+            <h3 id="modal-title" class="text-2xl font-bold mb-4 border-b pb-2 text-gray-800">編輯行程</h3>
+            
+            <form id="itinerary-form" class="space-y-4">
+                <input type="hidden" id="edit-day-key">
+                <input type="hidden" id="edit-item-id">
+                
+                <div id="day-select-group">
+                    <label for="edit-day" class="block text-sm font-medium text-gray-700">選擇日期</label>
+                    <select id="edit-day" name="day" required class="mt-1 block w-full border border-gray-300 rounded-lg shadow-inner p-2 focus:border-blue-500 focus:ring-1 focus:ring-blue-500">
+                        </select>
+                </div>
+
+                <div>
+                    <label for="edit-time" class="block text-sm font-medium text-gray-700">時間 (Ex: 09:30)</label>
+                    <input type="text" id="edit-time" name="time" required class="mt-1 block w-full border border-gray-300 rounded-lg shadow-inner p-2" placeholder="00:00">
+                </div>
+
+                <div>
+                    <label for="edit-desc" class="block text-sm font-medium text-gray-700">行程/活動描述</label>
+                    <textarea id="edit-desc" name="desc" rows="2" required class="mt-1 block w-full border border-gray-300 rounded-lg shadow-inner p-2" placeholder="Ex: DMM Kariyushi水族館"></textarea>
+                </div>
+
+                <div>
+                    <label for="edit-category" class="block text-sm font-medium text-gray-700">行程性質分類</label>
+                    <select id="edit-category" name="category" class="mt-1 block w-full border border-gray-300 rounded-lg shadow-inner p-2">
+                        <option value="Sightseeing">景點</option>
+                        <option value="Food">吃飯</option>
+                        <option value="Shopping">逛街/購物</option>
+                        <option value="Travel">交通</option>
+                        <option value="Accom">住宿</option>
+                        <option value="Other">彈性/其他</option>
+                    </select>
+                </div>
+                
+                <div>
+                    <label for="edit-notes" class="block text-sm font-medium text-gray-700">筆記/提醒事項</label>
+                    <textarea id="edit-notes" name="notes" rows="2" class="mt-1 block w-full border border-gray-300 rounded-lg shadow-inner p-2" placeholder="Ex: 需提前線上購票"></textarea>
+                </div>
+                
+                <div>
+                    <label for="edit-map" class="block text-sm font-medium text-gray-700 flex items-center">
+                        <i data-lucide="map-pin" class="icon mr-1 text-blue-500"></i>Google Maps 連結 (請貼上完整的 網址)
+                    </label>
+                    <input type="url" id="edit-map" name="map" class="mt-1 block w-full border border-gray-300 rounded-lg shadow-inner p-2" placeholder="貼上 Google Maps 分享連結 (在新分頁開啟)">
+                </div>
+
+                <div class="pt-4 flex justify-between items-center">
+                    <button type="button" id="delete-button" class="px-4 py-2 text-sm font-medium text-red-600 bg-red-100 rounded-full hover:bg-red-200 transition hidden">
+                        <i data-lucide="trash-2" class="icon mr-1 inline"></i>刪除
+                    </button>
+                    <div>
+                        <button type="button" id="close-modal-button" class="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-full hover:bg-gray-300 mr-2 transition">
+                            取消
+                        </button>
+                        <button type="submit" class="px-6 py-2 text-sm font-medium text-white bg-blue-500 rounded-full hover:bg-blue-600 transition shadow-md">
+                            儲存變更
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        // Data and State (Global access via window.itineraryData)
+        let editingItem = null; // Stores the item currently being edited
+
+        const ITINERARY_START_DATE = new Date('2026-03-04T00:00:00'); // 行程開始日期 (Day 1)
+        const DAYS_MAP = {
+            'Day1': '3/4 (三)', 'Day2': '3/5 (四)', 'Day3': '3/6 (五)', 
+            'Day4': '3/7 (六)', 'Day5': '3/8 (日)'
+        };
+
+        // 設置初始數據 (已將地圖短連結替換為完整的 Google Maps URL，解決 Dynamic Link Not Found 問題)
+        const INITIAL_ITINERARY_DATA = {
+            Day1: [
+                { id: 'd1-1', time: '19:30', desc: '抵達那霸機場 (OKA)', notes: '', category: 'Travel', map: 'https://www.google.com/maps/place/%E9%82%A3%E9%9C%B8%E5%9C%8B%E9%9A%9B%E6%A9%9F%E5%A0%B4/@26.196324,127.644919,15z/data=!4m6!3m5!1s0x34e569932467d165:0x2213e488106f36d!8m2!3d26.1963238!4d127.644919!16zL20vMDJtbjFk?entry=ttu' },
+                { id: 'd1-2', time: '21:00', desc: '若狹住宿 (1-10-18 Wakasa) Check-in', notes: '距離波上宮近', category: 'Accom', map: 'https://www.google.com/maps/place/%E6%B3%A2%E4%B8%8A%E5%AE%AE/@26.216654,127.67499,17z/data=!4m6!3m5!1s0x34e569992f08a467:0x2e06912384a5585b!8m2!3d26.2166541!4d127.6749899!16zL20vMDNxbmtf?entry=ttu' },
+                { id: 'd1-3', time: '21:45', desc: '晚餐：國際通周邊', notes: '建議找能容納12人的居酒屋', category: 'Food', map: 'https://www.google.com/maps/place/%E5%9C%8B%E9%9A%9B%E9%80%9A/@26.215582,127.685981,17z/data=!4m6!3m5!1s0x34e569911e3b5e43:0x41e156485d450849!8m2!3d26.2155815!4d127.685981!16zL20vMDJtdGt3?entry=ttu' },
+                { id: 'd1-4', time: '23:00', desc: '國際通 -> 唐吉軻德', notes: '採購宵夜零食 (步行)', category: 'Shopping', map: 'https://www.google.com/maps/place/%E5%94%90%E5%90%89%E8%A8%B6%E5%BE%B7+%E5%9C%8B%E9%9A%9B%E9%80%9A%E5%BA%97/@26.214434,127.687522,17z/data=!4m6!3m5!1s0x34e5697d4b297c8d:0x39a3f28328148b59!8m2!3d26.2144342!4d127.6875221!16s%2Fg%2F1hb_07v8h?entry=ttu' }
+            ],
+            Day2: [
+                { id: 'd2-1', time: '08:00', desc: '若狹住宿 Check-out', notes: '必須提早！前往租車公司', category: 'Accom', map: '' },
+                { id: 'd2-2', time: '08:30', desc: '抵達租車行辦手續', notes: '確保09:00準時取車', category: 'Travel', map: 'https://www.google.com/maps/search/%E6%B2%96%E7%B9%A9%E9%82%A3%E9%9C%B8%E7%A7%9F%E8%BB%8A/@26.212456,127.679198,14z/data=!3m1!4b1?entry=ttu' },
+                { id: 'd2-3', time: '09:10', desc: '出發前往 DMM', notes: '最晚出發時間，需事先購票', category: 'Travel', map: '' },
+                { id: 'd2-4', time: '09:30', desc: 'DMM Kariyushi水族館', notes: '準時入場！預計停留 4 小時', category: 'Sightseeing', map: 'https://www.google.com/maps/place/DMM+Kariyushi+%E6%B0%B4%E6%97%8F%E9%A4%A8/@26.155837,127.669866,17z/data=!4m6!3m5!1s0x34e568478d53018d:0xb029f64c1851b447!8m2!3d26.1558369!4d127.6698658!16s%2Fg%2F11b65_g75p?entry=ttu' },
+                { id: 'd2-5', time: '13:30', desc: '午餐：瀨長島 Umikaji Terrace', notes: '海景露臺用餐', category: 'Food', map: 'https://www.google.com/maps/place/%E7%80%AC%E9%95%B7%E5%B3%B6+Umikaji+Terrace/@26.184347,127.649641,17z/data=!4m6!3m5!1s0x34e5699351d45903:0x15f1896792376b5c!8m2!3d26.184347!4d127.6496414!16s%2Fg%2F11bw6l6y23?entry=ttu' },
+                { id: 'd2-6', time: '15:30', desc: '瀨長島 散步', notes: '欣賞飛機起降', category: 'Sightseeing', map: 'https://www.google.com/maps/place/%E7%80%AC%E9%95%B7%E5%B3%B6+Umikaji+Terrace/@26.184347,127.649641,17z/data=!4m6!3m5!1s0x34e5699351d45903:0x15f1896792376b5c!8m2!3d26.184347!4d127.6496414!16s%2Fg%2F11bw6l6y23?entry=ttu' },
+                { id: 'd2-7', time: '17:00', desc: '駕車前往宜野灣住宿 Check-in', notes: '宜野灣市宇治泊1-7-10', category: 'Accom', map: 'https://www.google.com/maps/place/%E5%AE%9C%E9%87%8E%E6%B9%BE%E6%B5%B7%E6%BF%B1%E5%85%AC%E5%9C%92/@26.273619,127.731737,17z/data=!4m6!3m5!1s0x34e56d7877e68225:0x8fa40714b92b6a7b!8m2!3d26.2736187!4d127.7317366!16s%2Fg%2F11b7p7r2wz?entry=ttu' },
+                { id: 'd2-8', time: '20:00', desc: '晚餐：飯店周邊或美國村', notes: '建議提前預約燒肉', category: 'Food', map: 'https://www.google.com/maps/place/%E7%BE%8E%E5%9C%8B%E6%9D%91/@26.313023,127.75704,17z/data=!4m6!3m5!1s0x34e56d81432f8087:0x5e2b02a9b3a32f6a!8m2!3d26.3130228!4d127.7570395!16zL20vMDd4Y3c4?entry=ttu' }
+            ],
+            Day3: [
+                { id: 'd3-1', time: '08:00', desc: '飯店早餐後出發', notes: '前往最北端，車程約 1hr 40mins', category: 'Travel', map: '' },
+                { id: 'd3-2', time: '10:00', desc: '古宇利大橋', notes: '絕美海景橋', category: 'Sightseeing', map: 'https://www.google.com/maps/place/%E5%8F%A4%E5%AE%87%E5%88%A9%E5%A4%A7%E6%A9%8B/@26.702081,127.954605,17z/data=!4m6!3m5!1s0x34e4a7a8d562211f:0x393c39389e672728!8m2!3d26.7020808!4d127.9546053!16s%2Fg%2F12239d_r?entry=ttu' },
+                { id: 'd3-3', time: '12:30', desc: '午餐：名護或本部町周邊', notes: '建議Ufuya古民家沖繩麵', category: 'Food', map: 'https://www.google.com/maps/place/%E5%90%8D%E8%AD%B7%E9%A6%AC%E5%96%84%E8%87%AA%E5%9C%A8%E5%B1%8B%EF%BC%88%E3%81%86%E3%81%B5%E3%82%84%EF%BC%89/@26.609439,127.961916,17z/data=!4m6!3m5!1s0x34e44b9b21f3f773:0x71e36780824b2b2a!8m2!3d26.6094391!4d127.9619163!16s%2Fg%2F11b7z_p77z?entry=ttu' },
+                { id: 'd3-4', time: '14:30', desc: '萬座毛', notes: '駕車南下回程途中停留', category: 'Sightseeing', map: 'https://www.google.com/maps/place/%E8%90%AC%E5%BA%A7%E6%AF%9B/@26.490899,127.854154,17z/data=!4m6!3m5!1s0x34e51242c75a5e37:0x5e790a1910245084!8m2!3d26.4908987!4d127.8541542!16zL20vMDJtZDN3?entry=ttu' },
+                { id: 'd3-5', time: '16:00', desc: '永旺夢樂城 Okinawa Rycom (AEON)', notes: '重點購物與晚餐時間', category: 'Shopping', map: 'https://www.google.com/maps/place/%E6%B0%B8%E6%97%BA%E5%A4%A2%E6%A8%82%E5%9F%8E%E6%B2%96%E7%B9%A9%E8%90%8A%E7%94%B1%E5%8B%9F/@26.311757,127.794279,17z/data=!4m6!3m5!1s0x34e51086e3925055:0xb942ed7245b0a3af!8m2!3d26.3117573!4d127.7942792!16s%2Fg%2F11b6h38z9h?entry=ttu' },
+                { id: 'd3-6', time: '20:00', desc: '晚餐：永旺夢樂城內', notes: '輕鬆享用晚餐，繼續購物', category: 'Food', map: 'https://www.google.com/maps/place/%E6%B0%B8%E6%97%BA%E5%A4%A2%E6%A8%82%E5%9F%8E%E6%B2%96%E7%B9%A9%E8%90%8A%E7%94%B1%E5%8B%9F/@26.311757,127.794279,17z/data=!4m6!3m5!1s0x34e51086e3925055:0xb942ed7245b0a3af!8m2!3d26.3117573!4d127.7942792!16s%2Fg%2F11b6h38z9h?entry=ttu' },
+            ],
+            Day4: [
+                { id: 'd4-1', time: '09:30', desc: '玉泉洞 (沖繩世界)', notes: '探索鐘乳石洞與琉球村落', category: 'Sightseeing', map: 'https://www.google.com/maps/place/%E7%8E%89%E6%B3%89%E6%B4%9E%E3%83%BB%E6%B2%96%E7%B9%A9%E4%B8%96%E7%95%8C/@26.155848,127.747385,17z/data=!4m6!3m5!1s0x34e56b468a733845:0x93301a5554af6b5e!8m2!3d26.1558483!4d127.7473852!16s%2Fm%2F01348p3b?entry=ttu' },
+                { id: 'd4-2', time: '13:00', desc: '午餐：SAN-A PARCO CITY 內餐廳', notes: '方便，節省移動時間', category: 'Food', map: 'https://www.google.com/maps/place/SAN-A+PARCO+CITY/@26.241324,127.671077,17z/data=!4m6!3m5!1s0x34e569992f08a467:0x2e06912384a5585b!8m2!3d26.2166541!4d127.6749899!16zL20vMDNxbmtf?entry=ttu' },
+                { id: 'd4-3', time: '14:30', desc: 'Placo (SAN-A PARCO CITY) 購物', category: 'Shopping', map: 'https://www.google.com/maps/place/SAN-A+PARCO+CITY/@26.241324,127.671077,17z/data=!4m6!3m5!1s0x34e569992f08a467:0x2e06912384a5585b!8m2!3d26.2166541!4d127.6749899!16zL20vMDNxbmtf?entry=ttu' },
+                { id: 'd4-4', time: '18:30', desc: '駕車前往國際通周邊', notes: '提前尋找停車位', category: 'Travel', map: '' },
+                { id: 'd4-5', time: '20:00', desc: '晚餐：國際通 周邊', notes: '推薦JUMBO STEAK HAN\'S', category: 'Food', map: 'https://www.google.com/maps/place/%E5%9C%8B%E9%9A%9B%E9%80%9A/@26.215582,127.685981,17z/data=!4m6!3m5!1s0x34e569911e3b5e43:0x41e156485d450849!8m2!3d26.2155815!4d127.685981!16zL20vMDJtdGt3?entry=ttu' },
+            ],
+            Day5: [
+                { id: 'd5-1', time: '09:00', desc: '宜野灣飯店 Check-out', notes: '將行李帶上車', category: 'Accom', map: '' },
+                { id: 'd5-2', time: '10:00', desc: '第一牧志市場', notes: '採購土產、體驗在地海鮮', category: 'Shopping', map: 'https://www.google.com/maps/place/%E7%AC%AC%E4%B8%80%E7%89%A7%E5%BF%97%E5%B8%82%E5%A0%B4/@26.215582,127.685981,17z/data=!4m6!3m5!1s0x34e5697d81cc5665:0xb3047a063162b289!8m2!3d26.2155815!4d127.685981!16zL20vMDJtdGt3?entry=ttu' },
+                { id: 'd5-3', time: '12:30', desc: '午餐：市場內代客料理或周邊', notes: '在市場內用餐', category: 'Food', map: 'https://www.google.com/maps/place/%E7%AC%AC%E4%B8%80%E7%89%A7%E5%BF%97%E5%B8%82%E5%A0%B4/@26.215582,127.685981,17z/data=!4m6!3m5!1s0x34e5697d81cc5665:0xb3047a063162b289!8m2!3d26.2155815!4d127.685981!16zL20vMDJtdGt3?entry=ttu' },
+                { id: 'd5-4', time: '14:00', desc: '波上宮', notes: '沖繩八社之首，靠近海邊的神社', category: 'Sightseeing', map: 'https://www.google.com/maps/place/%E6%B3%A2%E4%B8%8A%E5%AE%AE/@26.216654,127.67499,17z/data=!4m6!3m5!1s0x34e569992f08a467:0x2e06912384a5585b!8m2!3d26.2166541!4d127.6749899!16zL20vMDNxbmtf?entry=ttu' },
+                { id: 'd5-5', time: '15:00', desc: '那霸機場周邊還車', notes: '務必準時，預留充足時間', category: 'Travel', map: '' },
+                { id: 'd5-6', time: '18:00', desc: '辦理登機手續', notes: '', category: 'Travel', map: '' },
+            ]
+        };
+        
+        let itineraryData = INITIAL_ITINERARY_DATA;
+
+        // --- A. 應用程式互動邏輯 ---
+
+        /**
+         * 渲染整個行程表 (由 Firestore 數據驅動)
+         * @param {Object} data - 行程數據 {Day1: [...], Day2: [...], ...}
+         */
+        window.renderItinerary = (data) => {
+            const container = document.getElementById('itinerary-container');
+            const navContainer = document.getElementById('day-nav-container');
+            container.innerHTML = '';
+            navContainer.innerHTML = '';
+            document.getElementById('loading-message').style.display = 'none'; // 隱藏載入訊息
+
+            Object.entries(data).forEach(([dayKey, items], index) => {
+                const dayNumber = index + 1;
+                const dayDate = DAYS_MAP[dayKey];
+
+                // 1. 渲染導航按鈕
+                navContainer.innerHTML += `
+                    <a href="#${dayKey}" class="nav-item text-center flex-shrink-0 px-4 py-3 border-r border-white/10 hover:bg-white/10 transition-colors duration-150">
+                        <div class="font-bold">${dayKey}</div>
+                        <div class="text-xs opacity-80">${dayDate}</div>
+                    </a>
+                `;
+                
+                // 2. 渲染行程區塊 (已新增當日行程按鈕)
+                const daySection = document.createElement('section');
+                daySection.id = dayKey;
+                daySection.className = 'day-section';
+                daySection.innerHTML = `
+                    <div class="day-header p-4 flex justify-between items-center border-b-4 border-orange-400/70 bg-blue-50/70">
+                        <h2 class="text-2xl font-bold text-gray-800">
+                            <i data-lucide="calendar" class="icon mr-2 text-blue-500 inline"></i>${dayKey}：${dayDate}
+                        </h2>
+                    </div>
+                    <div class="itinerary-list p-4 space-y-3" data-day-key="${dayKey}">
+                        </div>
+                    <div class="p-4 pt-0">
+                        <button class="add-day-item w-full py-3 bg-blue-50 hover:bg-blue-100 text-blue-600 font-semibold rounded-lg transition-colors border border-blue-200" data-day-key="${dayKey}">
+                            <i data-lucide="plus" class="icon w-4 h-4 mr-1 inline"></i>新增 ${dayKey} 行程
+                        </button>
+                    </div>
+                `;
+                container.appendChild(daySection);
+
+                // 3. 渲染行程項目
+                const listContainer = daySection.querySelector('.itinerary-list');
+                items.forEach(item => {
+                    listContainer.appendChild(createItemElement(dayKey, item));
+                });
+            });
+
+            // 重新渲染 Lucide Icons
+            lucide.createIcons();
+
+            // 重新綁定事件 (D&D 和點擊編輯)
+            attachItemEventListeners();
+        };
+
+        /**
+         * 創建單個行程項目 (DOM Element) - 強化 Google Maps 顯示
+         */
+        const createItemElement = (dayKey, item) => {
+            const itemElement = document.createElement('div');
+            const categoryClass = window.categoryColors[item.category] || window.categoryColors['Other'];
+            const categoryIcon = window.categoryIcons[item.category] || window.categoryIcons['Other'];
+
+            itemElement.className = 'itinerary-item bg-white p-4 rounded-xl flex items-start border border-gray-100 hover:shadow-lg';
+            itemElement.setAttribute('draggable', 'true'); // 允許拖曳
+            itemElement.setAttribute('data-id', item.id);
+            itemElement.setAttribute('data-day-key', dayKey);
+            itemElement.innerHTML = `
+                <div class="w-8 flex flex-col items-center justify-center text-gray-400 cursor-grab pt-2">
+                    <i data-lucide="grip-vertical" class="icon w-4 h-4"></i>
+                </div>
+                <div class="flex-grow ml-2 space-y-1">
+                    <div class="flex justify-between items-center">
+                        <span class="text-xl font-extrabold text-blue-600 mr-4">${item.time}</span>
+                        <span class="text-xs font-medium px-2 py-1 rounded-full ${categoryClass}">${item.category === 'Sightseeing' ? '景點' : item.category === 'Food' ? '吃飯' : item.category === 'Shopping' ? '逛街' : item.category === 'Travel' ? '交通' : item.category === 'Accom' ? '住宿' : '其他'}</span>
+                    </div>
+                    <p class="text-base text-gray-700 font-medium">${item.desc}</p>
+                    <div class="flex items-center space-x-4 text-sm text-gray-500 pt-1">
+                        ${item.notes ? `<span class="flex items-center"><i data-lucide="notebook-pen" class="icon w-4 h-4 mr-1"></i>${item.notes}</span>` : ''}
+                        ${item.map ? 
+                            // 地圖連結顏色優化為藍色
+                            `<a href="${item.map}" target="_blank" class="flex items-center text-white bg-blue-500 hover:bg-blue-600 rounded-full px-2 py-0.5 text-xs font-semibold transition-colors shadow-sm">
+                                <i data-lucide="map-pin" class="icon w-3 h-3 mr-1"></i>
+                                Google 地圖
+                            </a>` : ''}
+                    </div>
+                </div>
+                <div class="w-6 text-gray-400 hover:text-blue-500 transition-colors pt-2">
+                    <i data-lucide="chevron-right" class="icon w-5 h-5"></i>
+                </div>
+            `;
+            return itemElement;
+        };
+
+
+        // --- B. 拖曳與排序 (Drag and Drop) 邏輯 ---
+        let dragSrcEl = null;
+
+        const attachItemEventListeners = () => {
+            document.querySelectorAll('.itinerary-item').forEach(item => {
+                // 1. 點擊編輯
+                item.addEventListener('click', (e) => {
+                    // 避免點擊地圖連結時觸發編輯
+                    if (e.target.closest('a')) return; 
+                    openEditModal(item.dataset.dayKey, item.dataset.id)
+                });
+                
+                // 2. 拖曳事件
+                item.addEventListener('dragstart', handleDragStart);
+                item.addEventListener('dragover', handleDragOver);
+                item.addEventListener('dragleave', handleDragLeave);
+                item.addEventListener('drop', handleDrop);
+                item.addEventListener('dragend', handleDragEnd);
+            });
+        };
+
+        function handleDragStart(e) {
+            dragSrcEl = this;
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/html', this.outerHTML);
+            this.classList.add('dragging');
+        }
+
+        function handleDragOver(e) {
+            e.preventDefault(); // 允許拖曳
+            e.dataTransfer.dropEffect = 'move';
+
+            if (dragSrcEl !== this) {
+                // 視覺提示：判斷是在上方還是下方
+                const rect = this.getBoundingClientRect();
+                const offsetY = e.clientY - rect.top;
+                
+                document.querySelectorAll('.itinerary-item').forEach(el => {
+                    el.classList.remove('drag-over-top', 'drag-over-bottom');
+                });
+
+                if (offsetY < rect.height / 2) {
+                    this.classList.add('drag-over-top');
+                } else {
+                    this.classList.add('drag-over-bottom');
+                }
+            }
+        }
+
+        function handleDragLeave(e) {
+            this.classList.remove('drag-over-top', 'drag-over-bottom');
+        }
+
+        function handleDrop(e) {
+            e.stopPropagation();
+            this.classList.remove('drag-over-top', 'drag-over-bottom');
+
+            if (dragSrcEl !== this) {
+                const sourceDayKey = dragSrcEl.dataset.dayKey;
+                const targetDayKey = this.dataset.dayKey;
+                const sourceId = dragSrcEl.dataset.id;
+                const targetId = this.dataset.id;
+                const sourceList = window.itineraryData[sourceDayKey];
+                const targetList = window.itineraryData[targetDayKey];
+
+                const sourceIndex = sourceList.findIndex(item => item.id === sourceId);
+                const targetIndex = targetList.findIndex(item => item.id === targetId);
+                
+                // 1. 移除拖曳的項目
+                const draggedItem = sourceList.splice(sourceIndex, 1)[0];
+                
+                // 2. 決定插入的位置
+                const rect = this.getBoundingClientRect();
+                const offsetY = e.clientY - rect.top;
+                
+                let insertIndex = targetIndex;
+                if (offsetY > rect.height / 2) {
+                    insertIndex = targetIndex + 1;
+                }
+                
+                let itemToInsert = draggedItem;
+
+                if (sourceDayKey !== targetDayKey) {
+                    // 跨日拖曳：賦予新的唯一 ID 
+                    itemToInsert = { ...draggedItem, id: window.generateNewId(targetDayKey) };
+                }
+
+                // 插入到目標列表
+                targetList.splice(insertIndex, 0, itemToInsert);
+                
+                // 3. 更新數據庫 (Mock Mode: 更新本地資料並重新渲染)
+                const newData = { ...window.itineraryData };
+                window.updateItineraryInDB(newData);
+            }
+        }
+
+        function handleDragEnd(e) {
+            this.classList.remove('dragging', 'drag-over-top', 'drag-over-bottom');
+            dragSrcEl = null;
+        }
+
+        // --- C. Modal (彈出視窗) 編輯邏輯 ---
+
+        const modal = document.getElementById('edit-modal');
+        const modalContent = document.getElementById('modal-content');
+        const daySelect = document.getElementById('edit-day');
+
+        // 打開 Modal
+        const openModal = (dayKey = null, itemId = null) => {
+            editingItem = null;
+            const form = document.getElementById('itinerary-form');
+            form.reset();
+            document.getElementById('delete-button').classList.add('hidden');
+            document.getElementById('modal-title').textContent = '新增行程項目';
+            document.getElementById('day-select-group').classList.remove('hidden'); // 預設顯示日期選擇
+            daySelect.innerHTML = ''; // 清空選項 (新增時重新填入)
+
+            if (itemId) {
+                // 編輯模式
+                const dayList = window.itineraryData[dayKey];
+                editingItem = dayList.find(item => item.id === itemId);
+                if (!editingItem) return;
+
+                document.getElementById('modal-title').textContent = '編輯行程';
+                document.getElementById('edit-day-key').value = dayKey;
+                document.getElementById('edit-item-id').value = itemId;
+                document.getElementById('edit-time').value = editingItem.time;
+                document.getElementById('edit-desc').value = editingItem.desc;
+                document.getElementById('edit-category').value = editingItem.category || 'Other';
+                document.getElementById('edit-notes').value = editingItem.notes || '';
+                document.getElementById('edit-map').value = editingItem.map || '';
+                
+                document.getElementById('delete-button').classList.remove('hidden');
+                document.getElementById('day-select-group').classList.add('hidden'); // 編輯時不允許跨日選擇
+            } else if (dayKey) {
+                // 點擊當日新增按鈕，預設選擇當日
+                document.getElementById('edit-day-key').value = dayKey;
+                document.getElementById('day-select-group').classList.add('hidden');
+            } else {
+                 // 點擊右下角 '+' 時，強制選擇日期
+                 Object.keys(DAYS_MAP).forEach(key => {
+                    daySelect.innerHTML += `<option value="${key}">${key} (${DAYS_MAP[key]})</option>`;
+                });
+            }
+
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            setTimeout(() => {
+                modalContent.classList.remove('opacity-0', 'scale-95');
+            }, 10);
+            lucide.createIcons(); // 確保 Modal 內的 Icon 渲染
+        };
+
+        // 關閉 Modal
+        const closeEditModal = () => {
+            modalContent.classList.add('opacity-0', 'scale-95');
+            setTimeout(() => {
+                modal.classList.add('hidden');
+                modal.classList.remove('flex');
+                daySelect.innerHTML = ''; // 清空選項
+            }, 300);
+        };
+
+        // 編輯單個行程項目
+        const openEditModal = (dayKey, itemId) => {
+            openModal(dayKey, itemId);
+        };
+
+        // --- D. 表單提交與數據更新 ---
+
+        document.getElementById('itinerary-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+
+            const formData = new FormData(e.target);
+            const itemId = formData.get('item');
+            let dayKey = formData.get('day') || formData.get('edit-day-key');
+            const currentId = formData.get('edit-item-id');
+
+            const newItem = {
+                id: currentId || window.generateNewId(dayKey),
+                time: formData.get('time'),
+                desc: formData.get('desc'),
+                notes: formData.get('notes'),
+                category: formData.get('category'),
+                map: formData.get('map'),
+            };
+
+            const newData = { ...window.itineraryData };
+            
+            if (currentId) {
+                // 編輯現有項目
+                const dayList = newData[dayKey];
+                const index = dayList.findIndex(item => item.id === currentId);
+                if (index !== -1) {
+                    dayList[index] = newItem;
+                }
+            } else {
+                // 新增項目
+                if (!newData[dayKey]) newData[dayKey] = [];
+                // 簡單插入
+                newData[dayKey].push(newItem);
+                // 嘗試按時間排序
+                newData[dayKey].sort((a, b) => a.time.localeCompare(b.time));
+            }
+            
+            window.updateItineraryInDB(newData);
+            closeEditModal();
+        });
+
+        // 刪除行程 (Unchanged)
+        document.getElementById('delete-button').addEventListener('click', () => {
+            if (!editingItem) return;
+
+            // 用 custom modal 替代 alert
+            const confirmDelete = window.confirm || ((message) => {
+                console.warn("Using console fallback for confirmation:", message);
+                return true; // Auto-confirm in non-browser envs
+            });
+
+            if (!confirmDelete("確定要刪除這個行程項目嗎？此操作無法恢復。")) return;
+
+            const dayKey = document.getElementById('edit-day-key').value;
+            const itemId = document.getElementById('edit-item-id').value;
+
+            if (dayKey && itemId) {
+                const newData = { ...window.itineraryData };
+                newData[dayKey] = newData[dayKey].filter(item => item.id !== itemId);
+                window.updateItineraryInDB(newData);
+                closeEditModal();
+            }
+        });
+
+        // 關閉 Modal 按鈕 (Unchanged)
+        document.getElementById('close-modal-button').addEventListener('click', closeEditModal);
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                closeEditModal();
+            }
+        });
+
+        // 右下角新增按鈕 (Unchanged)
+        document.getElementById('add-button').addEventListener('click', () => openModal(null, null));
+
+        // --- E. 輔助功能：即時時間/天氣模擬 (Unchanged) ---
+        function updateClock() {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('zh-TW', { hour12: false });
+            document.getElementById('current-time').textContent = timeStr;
+            
+            // 簡化模擬天氣建議 (基於沖繩3月氣候)
+            const weatherAdvice = `平均 20°C，建議多層次穿搭。`;
+            document.getElementById('current-weather').textContent = weatherAdvice;
+        }
+        setInterval(updateClock, 1000);
+        updateClock(); // 立即執行一次
+
+        // --- F. 新增當日行程按鈕 (監聽新增的日區塊按鈕) ---
+        // 點擊每個 Day Header 下方的按鈕來新增該日行程
+        document.addEventListener('click', (e) => {
+            // 使用 closest 查找 add-day-item 類別的父元素
+            const addButton = e.target.closest('.add-day-item');
+            if (addButton) {
+                const dayKey = addButton.dataset.dayKey;
+                openModal(dayKey, null);
+            }
+        });
+
+    </script>
+</body>
+</html>
